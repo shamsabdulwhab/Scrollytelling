@@ -1,11 +1,12 @@
 import type { FormEvent } from 'react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import * as blazeface from '@tensorflow-models/blazeface'
+import * as tf from '@tensorflow/tfjs'
 import './App.css'
 
 type GenderOption = 'woman' | 'man' | 'non-binary' | ''
 
 type FormState = {
-  name: string
   gender: GenderOption
   expectedSalary: string
   fieldOfStudy: string
@@ -56,14 +57,6 @@ function mapSalaryToLevel(salary: number): number {
   return Math.round(ratio * 4)
 }
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat('en-GB', {
-    style: 'currency',
-    currency: 'EUR',
-    maximumFractionDigits: 0,
-  }).format(value)
-}
-
 const genderLabels: Record<Exclude<GenderOption, ''>, string> = {
   woman: 'Woman',
   man: 'Man',
@@ -73,7 +66,6 @@ const genderLabels: Record<Exclude<GenderOption, ''>, string> = {
 function App() {
   const [stage, setStage] = useState<Stage>('intro')
   const [form, setForm] = useState<FormState>({
-    name: '',
     gender: '',
     expectedSalary: '',
     fieldOfStudy: '',
@@ -120,6 +112,10 @@ function App() {
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
+  const handlePhotoChange = (photoUrl: string | null) => {
+    setForm((prev) => ({ ...prev, photoUrl }))
+  }
+
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault()
     if (!form.gender) {
@@ -134,7 +130,6 @@ function App() {
   const handleRestart = () => {
     setStage('intro')
     setForm({
-      name: '',
       gender: '',
       expectedSalary: '',
       fieldOfStudy: '',
@@ -153,8 +148,8 @@ function App() {
         <FormScene
           form={form}
           hasGenderError={hasGenderError}
-          parsedExpectedSalary={parsedExpectedSalary}
           onChange={handleInputChange}
+          onPhotoChange={handlePhotoChange}
           onSubmit={handleSubmit}
         />
       </div>
@@ -202,20 +197,297 @@ function IntroScene({ onStart }: IntroSceneProps) {
 type FormSceneProps = {
   form: FormState
   hasGenderError: boolean
-  parsedExpectedSalary: number
   onChange: (field: keyof FormState, value: string) => void
+  onPhotoChange: (photoUrl: string | null) => void
   onSubmit: (event: FormEvent) => void
+}
+
+type PhotoAnalysis = {
+  faceCount: number | null
+  brightness: number | null // 0..1
+  contrast: number | null // 0..1
+  highlightClip: number | null // 0..1 fraction near-white
+  shadowClip: number | null // 0..1 fraction near-black
+  clutter: number | null // 0..1 edge density proxy
+  framing: 'close' | 'ok' | 'far' | 'unknown'
+  note: string
+  canProceed: boolean
 }
 
 function FormScene({
   form,
   hasGenderError,
-  parsedExpectedSalary,
   onChange,
+  onPhotoChange,
   onSubmit,
 }: FormSceneProps) {
+  const [analysis, setAnalysis] = useState<PhotoAnalysis | null>(null)
+  const faceModelRef = useRef<blazeface.BlazeFaceModel | null>(null)
+  const [faceModelStatus, setFaceModelStatus] = useState<
+    'idle' | 'loading' | 'ready' | 'failed'
+  >('idle')
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      if (faceModelRef.current) return
+      try {
+        setFaceModelStatus('loading')
+        // Prefer WebGL for speed; fallback to CPU if unavailable.
+        try {
+          await tf.setBackend('webgl')
+          await tf.ready()
+        } catch {
+          // Ignore backend failures; tfjs will fallback to another backend.
+        }
+        const model = await blazeface.load()
+        if (!cancelled) {
+          faceModelRef.current = model
+          setFaceModelStatus('ready')
+        }
+      } catch {
+        if (!cancelled) setFaceModelStatus('failed')
+      }
+    }
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!form.photoUrl) {
+      setAnalysis(null)
+      return
+    }
+
+    const photoUrl = form.photoUrl
+    let cancelled = false
+    const run = async () => {
+      try {
+        const img = new Image()
+        img.src = photoUrl
+        await img.decode()
+
+        const w = Math.max(1, img.naturalWidth || img.width || 640)
+        const h = Math.max(1, img.naturalHeight || img.height || 480)
+        const canvas = document.createElement('canvas')
+        canvas.width = w
+        canvas.height = h
+        const ctx = canvas.getContext('2d', { willReadFrequently: true })
+        if (!ctx) throw new Error('canvas')
+        ctx.drawImage(img, 0, 0, w, h)
+
+        // Downsample for fast analysis
+        const targetW = Math.min(240, w)
+        const targetH = Math.max(1, Math.round((h / w) * targetW))
+        const small = document.createElement('canvas')
+        small.width = targetW
+        small.height = targetH
+        const sctx = small.getContext('2d', { willReadFrequently: true })
+        if (!sctx) throw new Error('canvas-small')
+        sctx.drawImage(canvas, 0, 0, targetW, targetH)
+
+        const imgData = sctx.getImageData(0, 0, targetW, targetH)
+        const data = imgData.data
+
+        // Luminance stats
+        let sum = 0
+        let sumSq = 0
+        let highlightClip = 0
+        let shadowClip = 0
+        const n = targetW * targetH
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i]
+          const g = data[i + 1]
+          const b = data[i + 2]
+          const y = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+          sum += y
+          sumSq += y * y
+          if (y > 0.97) highlightClip += 1
+          if (y < 0.03) shadowClip += 1
+        }
+        const brightness = sum / n
+        const variance = Math.max(0, sumSq / n - brightness * brightness)
+        const contrast = Math.min(1, Math.sqrt(variance) / 0.5) // normalize rough
+        const highlightClipFrac = highlightClip / n
+        const shadowClipFrac = shadowClip / n
+
+        // Edge density (Sobel) for clutter proxy
+        // Build grayscale buffer
+        const gray = new Float32Array(n)
+        for (let y = 0; y < targetH; y++) {
+          for (let x = 0; x < targetW; x++) {
+            const idx = (y * targetW + x) * 4
+            gray[y * targetW + x] =
+              (0.2126 * data[idx] + 0.7152 * data[idx + 1] + 0.0722 * data[idx + 2]) / 255
+          }
+        }
+        let edgeCount = 0
+        let strongEdges = 0
+        for (let y = 1; y < targetH - 1; y++) {
+          for (let x = 1; x < targetW - 1; x++) {
+            const i = y * targetW + x
+            const gx =
+              -gray[i - targetW - 1] -
+              2 * gray[i - 1] -
+              gray[i + targetW - 1] +
+              gray[i - targetW + 1] +
+              2 * gray[i + 1] +
+              gray[i + targetW + 1]
+            const gy =
+              -gray[i - targetW - 1] -
+              2 * gray[i - targetW] -
+              gray[i - targetW + 1] +
+              gray[i + targetW - 1] +
+              2 * gray[i + targetW] +
+              gray[i + targetW + 1]
+            const mag = Math.sqrt(gx * gx + gy * gy)
+            edgeCount += 1
+            if (mag > 0.25) strongEdges += 1
+          }
+        }
+        const clutter = Math.min(1, strongEdges / Math.max(1, edgeCount)) // edge density
+
+        let faceCount: number | null = null
+        let framing: PhotoAnalysis['framing'] = 'unknown'
+        const FaceDetectorCtor = (window as any).FaceDetector
+        if (FaceDetectorCtor) {
+          const detector = new FaceDetectorCtor({ fastMode: true, maxDetectedFaces: 3 })
+          const bitmap = await createImageBitmap(canvas)
+          const faces = await detector.detect(bitmap)
+          faceCount = Array.isArray(faces) ? faces.length : 0
+          const first = faces?.[0]
+          const box = first?.boundingBox
+          if (box && w && h) {
+            const faceAreaRatio = (box.width * box.height) / (w * h)
+            if (faceAreaRatio > 0.22) framing = 'close'
+            else if (faceAreaRatio > 0.08) framing = 'ok'
+            else framing = 'far'
+          }
+        } else if (faceModelRef.current) {
+          // Fallback face detection using BlazeFace (TensorFlow.js)
+          const model = faceModelRef.current
+          const faces = await model.estimateFaces(canvas, false)
+          faceCount = Array.isArray(faces) ? faces.length : 0
+        }
+
+        const tooDark = brightness < 0.22
+        const tooBright = brightness > 0.88
+        const faceOk = faceCount === null ? true : faceCount === 1
+        const canProceed = faceOk && !tooDark && !tooBright
+
+        const noteParts: string[] = []
+        if (faceCount === null) {
+          noteParts.push(
+            faceModelStatus === 'failed'
+              ? 'Face model failed to load.'
+              : faceModelStatus === 'loading'
+                ? 'Loading face model…'
+                : 'Face detection not available.',
+          )
+        }
+        else if (faceCount === 0) noteParts.push('No face detected.')
+        else if (faceCount > 1) noteParts.push('More than one face detected.')
+        else noteParts.push('One face detected.')
+        if (tooDark) noteParts.push('Image looks dark.')
+        if (tooBright) noteParts.push('Image looks overexposed.')
+        if (framing !== 'unknown') noteParts.push(`Framing: ${framing}.`)
+
+        if (!cancelled) {
+          setAnalysis({
+            faceCount,
+            brightness,
+            contrast,
+            highlightClip: highlightClipFrac,
+            shadowClip: shadowClipFrac,
+            clutter,
+            framing,
+            note: noteParts.join(' '),
+            canProceed,
+          })
+        }
+      } catch {
+        if (!cancelled) {
+          setAnalysis({
+            faceCount: null,
+            brightness: null,
+            contrast: null,
+            highlightClip: null,
+            shadowClip: null,
+            clutter: null,
+            framing: 'unknown',
+            note: 'Could not analyze this photo. You can retake it.',
+            canProceed: true,
+          })
+        }
+      }
+    }
+
+    run()
+    return () => {
+      cancelled = true
+    }
+  }, [form.photoUrl])
+
+  const confidence = useMemo(() => {
+    if (!analysis) return null
+    const clamp01 = (v: number) => Math.max(0, Math.min(1, v))
+
+    // Lighting score from brightness + clipping
+    const b = analysis.brightness ?? 0.5
+    const bScore = 1 - Math.min(1, Math.abs(b - 0.55) / 0.55)
+    const clipPenalty =
+      (analysis.highlightClip ?? 0) * 2.2 + (analysis.shadowClip ?? 0) * 1.8
+    const lighting = clamp01(bScore - clipPenalty)
+
+    // Clutter score (lower clutter is better)
+    const clutter = clamp01(1 - (analysis.clutter ?? 0.25) * 2.0)
+
+    // Face score (prefer exactly 1 face; neutral if detector unavailable)
+    let face = 0.65
+    if (analysis.faceCount !== null) {
+      if (analysis.faceCount === 1) face = 1
+      else if (analysis.faceCount === 0) face = 0.15
+      else face = 0.25
+    }
+
+    const overall = 100 * (0.45 * lighting + 0.30 * clutter + 0.25 * face)
+
+    return Math.round(Math.max(0, Math.min(100, overall)))
+  }, [analysis])
+
+  const breakdown = useMemo(() => {
+    if (!analysis) return null
+    const percent = (v: number) => Math.round(Math.max(0, Math.min(1, v)) * 100)
+
+    const b = analysis.brightness ?? 0.5
+    const bScore = 1 - Math.min(1, Math.abs(b - 0.55) / 0.55)
+    const clipPenalty =
+      (analysis.highlightClip ?? 0) * 2.2 + (analysis.shadowClip ?? 0) * 1.8
+    const lighting = Math.max(0, Math.min(1, bScore - clipPenalty))
+
+    const clutter = Math.max(0, Math.min(1, 1 - (analysis.clutter ?? 0.25) * 2.0))
+
+    let face = 0.65
+    if (analysis.faceCount !== null) {
+      if (analysis.faceCount === 1) face = 1
+      else if (analysis.faceCount === 0) face = 0.15
+      else face = 0.25
+    }
+
+    return [
+      { label: 'Lighting', value: percent(lighting) },
+      { label: 'Clutter', value: percent(clutter) },
+      { label: 'Face', value: percent(face) },
+    ]
+  }, [analysis])
+
   const topBubbles = useMemo(() => {
     const bubbles: { label: string; tone: 'id' | 'field' | 'salary' }[] = []
+    if (form.photoUrl) {
+      bubbles.push({ label: 'Photo', tone: 'id' })
+    }
     if (form.gender) {
       bubbles.push({
         label: genderLabels[form.gender as Exclude<GenderOption, ''>],
@@ -223,25 +495,16 @@ function FormScene({
       })
     }
     if (form.fieldOfStudy.trim()) {
-      bubbles.push({
-        label: form.fieldOfStudy.trim(),
-        tone: 'field',
-      })
+      bubbles.push({ label: form.fieldOfStudy.trim(), tone: 'field' })
     }
     if (form.expectedSalary.trim()) {
       bubbles.push({
-        label: formatCurrency(parsedExpectedSalary),
+        label: form.expectedSalary,
         tone: 'salary',
       })
     }
-    if (form.name.trim()) {
-      bubbles.push({
-        label: form.name.trim(),
-        tone: 'id',
-      })
-    }
     return bubbles
-  }, [form.gender, form.fieldOfStudy, form.expectedSalary, form.name, parsedExpectedSalary])
+  }, [form.gender, form.photoUrl, form.fieldOfStudy, form.expectedSalary])
 
   return (
     <section className="panel panel-form">
@@ -254,17 +517,6 @@ function FormScene({
       <div className="panel-layout">
         <form className="gap-form" onSubmit={onSubmit} noValidate>
           <div className="form-grid">
-            <div className="form-field">
-              <label htmlFor="name">Name (optional)</label>
-              <input
-                id="name"
-                type="text"
-                placeholder="Type your name"
-                value={form.name}
-                onChange={(e) => onChange('name', e.target.value)}
-              />
-            </div>
-
             <div className={`form-field ${hasGenderError ? 'form-field--error' : ''}`}>
               <div className="label-row">
                 <label htmlFor="gender">Gender (required)</label>
@@ -285,20 +537,11 @@ function FormScene({
                 >
                   Man
                 </button>
-                <button
-                  type="button"
-                  className={`pill ${form.gender === 'non-binary' ? 'pill--active' : ''}`}
-                  onClick={() => onChange('gender', 'non-binary')}
-                >
-                  Non-binary / Other
-                </button>
               </div>
             </div>
 
             <div className="form-field">
-              <label htmlFor="salary">
-                Expected monthly salary (optional)
-              </label>
+              <label htmlFor="salary">Expected salary (optional)</label>
               <input
                 id="salary"
                 type="text"
@@ -314,29 +557,55 @@ function FormScene({
               <input
                 id="field"
                 type="text"
-                placeholder="Type your field or leave empty"
+                placeholder="Front-end, Design, Engineering..."
                 value={form.fieldOfStudy}
                 onChange={(e) => onChange('fieldOfStudy', e.target.value)}
               />
             </div>
+          </div>
 
-            <div className="form-field">
-              <label htmlFor="photo">Your photo (optional)</label>
-              <input
-                id="photo"
-                type="file"
-                accept="image/*"
-                onChange={(e) => {
-                  const file = e.target.files?.[0]
-                  if (!file) {
-                    onChange('photoUrl', '')
-                    return
-                  }
-                  const url = URL.createObjectURL(file)
-                  onChange('photoUrl', url)
-                }}
-              />
-            </div>
+          <div className="camera-below">
+            {!form.photoUrl ? (
+              <CameraCapture photoUrl={form.photoUrl} onPhotoChange={onPhotoChange} />
+            ) : (
+              <div className="camera-after">
+                <span className="camera-after-label" aria-hidden="true">
+                  📷 Photo captured
+                </span>
+                <button
+                  type="button"
+                  className="camera-icon-button"
+                  onClick={() => onPhotoChange(null)}
+                >
+                  Retake
+                </button>
+              </div>
+            )}
+
+            {analysis && (
+              <div className="confidence">
+                <div className="confidence-row">
+                  <span className="confidence-label">Confidence level</span>
+                  <strong className="confidence-value">
+                    {confidence === null ? '—' : `${confidence}%`}
+                  </strong>
+                </div>
+                <div className="confidence-meter" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={confidence ?? undefined}>
+                  <div className="confidence-fill" style={{ width: `${confidence ?? 0}%` }} />
+                </div>
+                <p className="confidence-note">{analysis.note}</p>
+                {breakdown && (
+                  <ul className="confidence-breakdown">
+                    {breakdown.map((row) => (
+                      <li key={row.label}>
+                        <span>{row.label}</span>
+                        <strong>{row.value}%</strong>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="form-footer">
@@ -374,6 +643,137 @@ function FormScene({
   )
 }
 
+type CameraCaptureProps = {
+  photoUrl: string | null
+  onPhotoChange: (photoUrl: string | null) => void
+}
+
+function CameraCapture({ photoUrl, onPhotoChange }: CameraCaptureProps) {
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const [status, setStatus] = useState<
+    'idle' | 'requesting' | 'ready' | 'blocked' | 'unsupported'
+  >('idle')
+
+  const stopStream = () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+  }
+
+  useEffect(() => {
+    return () => stopStream()
+  }, [])
+
+  const enableCamera = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setStatus('unsupported')
+      return
+    }
+    setStatus('requesting')
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user' },
+        audio: false,
+      })
+      streamRef.current = stream
+      const video = videoRef.current
+      if (video) {
+        video.srcObject = stream
+        await video.play()
+      }
+      setStatus('ready')
+    } catch {
+      setStatus('blocked')
+    }
+  }
+
+  const takePhoto = () => {
+    const video = videoRef.current
+    if (!video) return
+
+    const canvas = document.createElement('canvas')
+    const width = Math.max(1, video.videoWidth || 640)
+    const height = Math.max(1, video.videoHeight || 480)
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.drawImage(video, 0, 0, width, height)
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
+    onPhotoChange(dataUrl)
+    stopStream()
+    setStatus('idle')
+  }
+
+  return (
+    <div className="camera-mini">
+      <div className="camera-mini-row">
+        <span className="camera-mini-label" aria-hidden="true">
+          📷
+        </span>
+        <div className="camera-mini-actions">
+          {!photoUrl && status !== 'ready' && (
+            <button
+              type="button"
+              className="camera-icon-button"
+              onClick={enableCamera}
+              disabled={status === 'requesting'}
+              aria-label="Enable camera"
+              title="Enable camera"
+            >
+              {status === 'requesting' ? '…' : 'Enable'}
+            </button>
+          )}
+          {status === 'ready' && (
+            <button
+              type="button"
+              className="camera-icon-button camera-icon-button--primary"
+              onClick={takePhoto}
+              aria-label="Take photo"
+              title="Take photo"
+            >
+              Shot
+            </button>
+          )}
+          {photoUrl && (
+            <button
+              type="button"
+              className="camera-icon-button"
+              onClick={() => onPhotoChange(null)}
+              aria-label="Retake photo"
+              title="Retake"
+            >
+              Retake
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="camera-frame camera-frame--mini">
+        {photoUrl ? (
+          <img className="camera-photo" src={photoUrl} alt="Captured photo" />
+        ) : (
+          <video className="camera-video" ref={videoRef} playsInline muted />
+        )}
+
+        {status === 'blocked' && (
+          <p className="camera-hint">
+            Camera permission was blocked. Allow it in your browser site settings and try again.
+          </p>
+        )}
+        {status === 'unsupported' && (
+          <p className="camera-hint">
+            Your browser doesn&apos;t support camera capture. Try Chrome, or use another device.
+          </p>
+        )}
+        {status !== 'ready' && !photoUrl && status !== 'blocked' && status !== 'unsupported' && (
+          <p className="camera-hint">Tap “Enable”, then “Shot”</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 type ResultSceneProps = {
   form: FormState
   result: ResultData
@@ -382,6 +782,8 @@ type ResultSceneProps = {
 
 function ResultScene({ form, result, onRestart }: ResultSceneProps) {
   const [tilt, setTilt] = useState<{ x: number; y: number }>({ x: 12, y: -18 })
+  const [activeStoryStep, setActiveStoryStep] = useState(0)
+  const storyRefs = useRef<Array<HTMLElement | null>>([])
 
   const handlePyramidMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -395,32 +797,33 @@ function ResultScene({ form, result, onRestart }: ResultSceneProps) {
   const handlePyramidMouseLeave = () => {
     setTilt({ x: 12, y: -18 })
   }
-  const name = form.name.trim()
   const gender = form.gender
 
-  const headline = name ? `${name}, here is your position.` : 'Here is your position.'
-
-  const ambitionLine = form.expectedSalary.trim()
-    ? 'You voiced a clear salary ambition.'
-    : 'Even without a number, your ambitions still meet a biased structure.'
-
-  const genderLine =
-    gender === 'woman'
-      ? 'Because you selected woman, the system quietly nudges your likely outcome down.'
-      : gender === 'man'
-        ? 'Because you selected man, the system subtly tilts the ladder in your favour.'
-        : gender === 'non-binary'
-          ? 'Because you selected a non-binary identity, the system often struggles to see you at all.'
-          : 'Gender information changes how similar ambitions are rewarded.'
-
-  const gapDescription =
-    result.gapAmount > 0
-      ? `The distance between what you expect and what the system often delivers is ${formatCurrency(
-          result.gapAmount,
-        )} each month — around ${result.gapPercent.toFixed(1)}%.`
-      : 'In this simplified model your adjusted outcome matches or exceeds your expectation, but the structure is still uneven for others.'
+  const headline = 'Here is your position.'
 
   const suggestions = buildSuggestions(gender, form.fieldOfStudy)
+
+  // Scroll-driven story: observe which section is active
+  useEffect(() => {
+    const nodes = storyRefs.current.filter(Boolean) as HTMLElement[]
+    if (nodes.length === 0) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => (b.intersectionRatio ?? 0) - (a.intersectionRatio ?? 0))[0]
+        if (!visible) return
+        const idx = Number((visible.target as HTMLElement).dataset.stepIndex ?? '0')
+        if (!Number.isNaN(idx)) setActiveStoryStep(idx)
+      },
+      // activate when section crosses the middle band
+      { threshold: [0.2, 0.35, 0.5], rootMargin: '-35% 0px -45% 0px' },
+    )
+
+    nodes.forEach((n) => observer.observe(n))
+    return () => observer.disconnect()
+  }, [suggestions.length])
 
   const levelCount = 5
   const maxIndex = levelCount - 1
@@ -429,18 +832,21 @@ function ResultScene({ form, result, onRestart }: ResultSceneProps) {
   const currentPercent = 8 + currentRatio * 80
   const expectedPercent = 8 + expectedRatio * 80
 
+  const storyStepPercent = useMemo(() => {
+    // Map 0..3 => 8%, 32%, 56%, 80% (4 steps)
+    const clamped = Math.max(0, Math.min(3, activeStoryStep))
+    return 8 + (clamped / 3) * 72
+  }, [activeStoryStep])
+
   return (
     <section className="panel panel-result">
       <header className="panel-header">
-        <p className="panel-kicker">Stage 4–6 · Realisation and action</p>
         <h2>{headline}</h2>
-        <p className="panel-body">
-          {ambitionLine} {genderLine}
-        </p>
       </header>
 
-      <div className="panel-layout panel-layout--result">
-        <div className="pyramid-wrapper">
+      <div className="story-layout">
+        <div className="story-left">
+          <div className="pyramid-wrapper pyramid-wrapper--sticky">
           <h3 className="pyramid-title">Your place on the pyramid</h3>
           <p className="panel-body">
             The pyramid represents economic power and opportunity. Each step up means more income,
@@ -455,6 +861,7 @@ function ResultScene({ form, result, onRestart }: ResultSceneProps) {
               {
                 '--current-pos': `${currentPercent}%`,
                 '--expected-pos': `${expectedPercent}%`,
+                '--story-pos': `${storyStepPercent}%`,
                 '--tilt-x': `${tilt.x}deg`,
                 '--tilt-y': `${tilt.y}deg`,
               } as React.CSSProperties
@@ -476,6 +883,13 @@ function ResultScene({ form, result, onRestart }: ResultSceneProps) {
                     </div>
                   )}
                 </div>
+                {form.photoUrl && (
+                  <div className="pyramid-human pyramid-human--story">
+                    <div className="pyramid-avatar pyramid-avatar--story">
+                      <img src={form.photoUrl} alt="Your story position" />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
             <div className="pyramid-steps">
@@ -493,60 +907,39 @@ function ResultScene({ form, result, onRestart }: ResultSceneProps) {
             <span className="legend-dot legend-dot--expected" />
             <span>Where your ambition points</span>
           </div>
-        </div>
-
-        <div className="gap-wrapper">
-          <h3 className="gap-title">How the gap adds up</h3>
-          <p className="panel-body">{gapDescription}</p>
-
-          <div className="gap-cards">
-            <div className="gap-card">
-              <h4>Expected income</h4>
-              <p className="gap-value">{formatCurrency(result.normalizedExpected)}</p>
-              <p className="gap-caption">Where you imagine yourself landing.</p>
-            </div>
-            <div className="gap-card gap-card--dimmed">
-              <h4>System-adjusted outcome</h4>
-              <p className="gap-value">{formatCurrency(result.adjustedSalary)}</p>
-              <p className="gap-caption">
-                Where biased structures often place someone with your gender.
-              </p>
-            </div>
-            <div className="gap-card gap-card--accent">
-              <h4>Monthly gap</h4>
-              <p className="gap-value">
-                {result.gapAmount > 0 ? formatCurrency(result.gapAmount) : '—'}
-              </p>
-              <p className="gap-caption">
-                {result.gapAmount > 0
-                  ? `That&apos;s about ${result.gapPercent.toFixed(1)}% of your expected pay.`
-                  : 'Here the model shows no loss, but many others still face one.'}
-              </p>
-            </div>
           </div>
         </div>
-      </div>
 
-      <div className="suggestions suggestions--separate">
-        <div className="suggestions-header">
-          <p className="panel-kicker">AI-style suggestions</p>
-          <h3>Ways to challenge the gap</h3>
-        </div>
-        <div className="suggestion-grid">
-          {suggestions.map((item) => (
-            <article key={item.title} className="suggestion-card">
-              <div className="suggestion-icon" aria-hidden="true">
-                {item.icon}
-              </div>
-              <h4>{item.title}</h4>
-              <p>{item.body}</p>
-            </article>
-          ))}
-        </div>
+        <div className="story-right">
+          <div className="story-suggestions">
+            {suggestions.slice(0, 4).map((item, idx) => (
+              <section
+                key={item.title}
+                className="story-section"
+                ref={(el) => {
+                  storyRefs.current[idx] = el
+                }}
+                data-step-index={idx}
+              >
+                <div className={`story-card ${idx === activeStoryStep ? 'is-active' : ''}`}>
+                  <div className="story-card-inner">
+                    <div className="suggestion-icon" aria-hidden="true">
+                      {item.icon}
+                    </div>
+                    <div>
+                      <h4 className="story-card-title">{item.title}</h4>
+                      <p className="story-card-body">{item.body}</p>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            ))}
 
-        <button className="secondary-button" onClick={onRestart}>
-          Spin again with a different profile
-        </button>
+            <button className="secondary-button" onClick={onRestart}>
+              Spin again with a different profile
+            </button>
+          </div>
+        </div>
       </div>
     </section>
   )
