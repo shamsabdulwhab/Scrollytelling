@@ -133,6 +133,15 @@ function App() {
     }))
   }
 
+  function handleClearCameraSaved() {
+    setForm((prev) => ({
+      ...prev,
+      cameraSavedEthnicity: undefined,
+      cameraSavedAgeRange: undefined,
+      cameraSavedConfidence: undefined,
+    }))
+  }
+
   function handleSubmit(event: FormEvent) {
     event.preventDefault()
     if (!form.gender) {
@@ -196,7 +205,7 @@ function App() {
           hasGenderError={hasGenderError}
           onChange={handleInputChange}
           onPhotoChange={handlePhotoChange}
-          onApplyCameraEdit={(payload) =>
+          onApplyCameraSave={(payload) =>
             setForm((prev) => ({
               ...prev,
               gender: payload.gender,
@@ -205,6 +214,7 @@ function App() {
               cameraSavedConfidence: payload.confidence,
             }))
           }
+          onClearCameraSaved={handleClearCameraSaved}
           onSubmit={handleSubmit}
           onBack={handleBackToIntro}
         />
