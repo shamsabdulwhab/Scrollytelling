@@ -1,5 +1,5 @@
 import type { FormEvent } from 'react'
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { DEFAULT_SALARY, MAX_SALARY, MIN_SALARY, PYRAMID_LEVEL_COUNT } from './constants'
 import { IntroScene } from './pages/IntroScene'
 import type { FormState, GenderOption, ResultData, Stage } from './types'
@@ -72,6 +72,18 @@ function App() {
   })
 
   const [result, setResult] = useState<ResultData | null>(null)
+
+  /**
+   * Keep FormScene mounted when returning to intro so `.scene` opacity/transform transitions
+   * still run (TensorFlow only loads after first visit to form or result).
+   */
+  const formSceneEverMountedRef = useRef(false)
+
+  useEffect(() => {
+    if (stage === 'form' || stage === 'result') {
+      formSceneEverMountedRef.current = true
+    }
+  }, [stage])
 
   const hasGenderError = stage === 'form' && form.gender === ''
 
@@ -171,6 +183,7 @@ function App() {
   }
 
   const handleRestart = () => {
+    formSceneEverMountedRef.current = false
     setIntroSlide(0)
     setStage('intro')
     setForm({
@@ -207,16 +220,16 @@ function App() {
     </div>
   )
 
+  const mountFormScene = formSceneEverMountedRef.current || stage !== 'intro'
+
   return (
     <div className={appShellClass}>
-      {stage === 'intro' && (
-        <div className="scene scene-intro is-active">
-          <IntroScene slide={introSlide} onSlideChange={setIntroSlide} onStart={handleStart} />
-        </div>
-      )}
+      <div className={`scene scene-intro ${stage === 'intro' ? 'is-active' : 'is-hidden'}`}>
+        <IntroScene slide={introSlide} onSlideChange={setIntroSlide} onStart={handleStart} />
+      </div>
 
-      {stage === 'form' && (
-        <div className="scene scene-form is-active">
+      <div className={`scene scene-form ${stage === 'form' ? 'is-active' : 'is-hidden'}`}>
+        {mountFormScene && (
           <Suspense fallback={sceneFallback}>
             <FormScene
               form={form}
@@ -237,11 +250,11 @@ function App() {
               onBack={handleBackToIntro}
             />
           </Suspense>
-        </div>
-      )}
+        )}
+      </div>
 
-      {stage === 'result' && result && (
-        <div className="scene scene-result is-active">
+      <div className={`scene scene-result ${stage === 'result' ? 'is-active' : 'is-hidden'}`}>
+        {result && (
           <Suspense fallback={sceneFallback}>
             <ResultScene
               form={form}
@@ -250,8 +263,8 @@ function App() {
               onRestart={handleRestart}
             />
           </Suspense>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }

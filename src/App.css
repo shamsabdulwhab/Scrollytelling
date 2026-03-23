@@ -60,12 +60,14 @@
   position: absolute;
   inset: 32px 16px;
   margin: 0 auto;
+  z-index: 0;
 }
 
 .scene.is-active {
   opacity: 1;
   transform: translateY(0) scale(1);
   filter: none;
+  z-index: 1;
 }
 
 /* Intro — match design reference (poster type, full-width line, Euro coin art) */
