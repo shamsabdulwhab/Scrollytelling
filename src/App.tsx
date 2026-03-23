@@ -28,6 +28,14 @@ const DEFAULT_SALARY = 3200
 const MAX_SALARY = 8000
 const MIN_SALARY = 1200
 
+/** Experimental API; not in all `lib.dom` versions as `Window` member */
+type FaceDetectorConstructor = new (options?: {
+  fastMode?: boolean
+  maxDetectedFaces?: number
+}) => {
+  detect(image: ImageBitmapSource): Promise<Array<{ boundingBox?: DOMRectReadOnly }>>
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
@@ -384,7 +392,8 @@ function FormScene({
 
         let faceCount: number | null = null
         let framing: PhotoAnalysis['framing'] = 'unknown'
-        const FaceDetectorCtor = (window as any).FaceDetector
+        const FaceDetectorCtor = (window as Window & { FaceDetector?: FaceDetectorConstructor })
+          .FaceDetector
         if (FaceDetectorCtor) {
           const detector = new FaceDetectorCtor({ fastMode: true, maxDetectedFaces: 3 })
           const bitmap = await createImageBitmap(canvas)
@@ -461,7 +470,7 @@ function FormScene({
     return () => {
       cancelled = true
     }
-  }, [form.photoUrl])
+  }, [form.photoUrl, faceModelStatus])
 
   const confidence = useMemo(() => {
     if (!analysis) return null
@@ -860,64 +869,15 @@ function ResultScene({ form, result, onRestart }: ResultSceneProps) {
     return () => observer.disconnect()
   }, [suggestions.length])
 
-  // Card transition bookkeeping (to animate previous card out)
-  useEffect(() => {
-    setLeavingStep((prev) => {
-      if (prev === activeStoryStep) return prev
-      return prev
-    })
-  }, [activeStoryStep])
-
-  useEffect(() => {
-    setLeavingStep((prev) => {
-      if (prev === null) return null
-      return prev
-    })
-  }, [])
-
-  useEffect(() => {
-    setLeavingStep((prev) => {
-      if (prev === null) return activeStoryStep
-      if (prev === activeStoryStep) return prev
-      return prev
-    })
-  }, [activeStoryStep])
-
-  useEffect(() => {
-    // When step changes, mark previous as leaving for 320ms
-    setLeavingStep((prev) => {
-      if (prev === null) return null
-      return prev
-    })
-  }, [])
-
-  useEffect(() => {
-    // Track previous step for exit animation
-    setLeavingStep((prevLeaving) => {
-      // no-op; handled below
-      return prevLeaving
-    })
-  }, [])
-
-  useEffect(() => {
-    // Determine previous step (simple: last leavingStepKey holds it)
-    setLeavingKey((k) => k + 1)
-  }, [activeStoryStep])
-
-  useEffect(() => {
-    // Store previous step and clear after animation
-    setLeavingStep((prev) => {
-      // prev holds previous step at the moment before change, but we don't have it here.
-      // We'll compute it from leavingKey effect below using a ref.
-      return prev
-    })
-  }, [leavingKey])
-
+  // Card transition: when scroll-driven step changes, show previous card leaving briefly.
   const prevStepRef = useRef(activeStoryStep)
   useEffect(() => {
     const prev = prevStepRef.current
     if (prev !== activeStoryStep) {
+      // Sync updates: deferring with setTimeout(0) breaks under Strict Mode — effect cleanup
+      // clears timers before they run, so the leaving card never appears in dev.
       setLeavingStep(prev)
+      setLeavingKey((k) => k + 1)
       const t = window.setTimeout(() => setLeavingStep(null), 320)
       prevStepRef.current = activeStoryStep
       return () => window.clearTimeout(t)
