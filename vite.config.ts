@@ -5,4 +5,8 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   base: '/Scrollytelling/',
+  build: {
+    // TensorFlow + BlazeFace form one large async chunk; 500 kB default is too strict.
+    chunkSizeWarningLimit: 1600,
+  },
 })

@@ -13,6 +13,17 @@
   box-sizing: border-box;
 }
 
+.app-scene-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40vh;
+  width: 100%;
+  font-size: 14px;
+  color: #666;
+  letter-spacing: 0.06em;
+}
+
 .app-shell--intro {
   flex: 0 0 100dvh;
   height: 100dvh;

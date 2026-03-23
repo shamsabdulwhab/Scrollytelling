@@ -1,11 +1,19 @@
 import type { FormEvent } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { DEFAULT_SALARY, MAX_SALARY, MIN_SALARY, PYRAMID_LEVEL_COUNT } from './constants'
-import { FormScene } from './pages/FormScene'
 import { IntroScene } from './pages/IntroScene'
-import { ResultScene } from './pages/ResultScene'
 import type { FormState, GenderOption, ResultData, Stage } from './types'
 import './App.css'
+
+const FormScene = lazy(async () => {
+  const m = await import('./pages/FormScene')
+  return { default: m.FormScene }
+})
+
+const ResultScene = lazy(async () => {
+  const m = await import('./pages/ResultScene')
+  return { default: m.ResultScene }
+})
 
 /** Keep a number between min and max (used for salary math) */
 function clamp(value: number, min: number, max: number) {
@@ -193,43 +201,57 @@ function App() {
     appShellClass += ' app-shell--result'
   }
 
+  const sceneFallback = (
+    <div className="app-scene-fallback" role="status" aria-live="polite">
+      Loading…
+    </div>
+  )
+
   return (
     <div className={appShellClass}>
-      <div className={`scene scene-intro ${stage === 'intro' ? 'is-active' : 'is-hidden'}`}>
-        <IntroScene slide={introSlide} onSlideChange={setIntroSlide} onStart={handleStart} />
-      </div>
+      {stage === 'intro' && (
+        <div className="scene scene-intro is-active">
+          <IntroScene slide={introSlide} onSlideChange={setIntroSlide} onStart={handleStart} />
+        </div>
+      )}
 
-      <div className={`scene scene-form ${stage === 'form' ? 'is-active' : 'is-hidden'}`}>
-        <FormScene
-          form={form}
-          hasGenderError={hasGenderError}
-          onChange={handleInputChange}
-          onPhotoChange={handlePhotoChange}
-          onApplyCameraSave={(payload) =>
-            setForm((prev) => ({
-              ...prev,
-              gender: payload.gender,
-              cameraSavedEthnicity: payload.ethnicity,
-              cameraSavedAgeRange: payload.ageRange,
-              cameraSavedConfidence: payload.confidence,
-            }))
-          }
-          onClearCameraSaved={handleClearCameraSaved}
-          onSubmit={handleSubmit}
-          onBack={handleBackToIntro}
-        />
-      </div>
+      {stage === 'form' && (
+        <div className="scene scene-form is-active">
+          <Suspense fallback={sceneFallback}>
+            <FormScene
+              form={form}
+              hasGenderError={hasGenderError}
+              onChange={handleInputChange}
+              onPhotoChange={handlePhotoChange}
+              onApplyCameraSave={(payload) =>
+                setForm((prev) => ({
+                  ...prev,
+                  gender: payload.gender,
+                  cameraSavedEthnicity: payload.ethnicity,
+                  cameraSavedAgeRange: payload.ageRange,
+                  cameraSavedConfidence: payload.confidence,
+                }))
+              }
+              onClearCameraSaved={handleClearCameraSaved}
+              onSubmit={handleSubmit}
+              onBack={handleBackToIntro}
+            />
+          </Suspense>
+        </div>
+      )}
 
-      <div className={`scene scene-result ${stage === 'result' ? 'is-active' : 'is-hidden'}`}>
-        {result && (
-          <ResultScene
-            form={form}
-            result={result}
-            onBack={handleBackToForm}
-            onRestart={handleRestart}
-          />
-        )}
-      </div>
+      {stage === 'result' && result && (
+        <div className="scene scene-result is-active">
+          <Suspense fallback={sceneFallback}>
+            <ResultScene
+              form={form}
+              result={result}
+              onBack={handleBackToForm}
+              onRestart={handleRestart}
+            />
+          </Suspense>
+        </div>
+      )}
     </div>
   )
 }
