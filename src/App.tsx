@@ -1,4 +1,4 @@
-import type { FormEvent } from 'react'
+import type { FormEvent, KeyboardEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as blazeface from '@tensorflow-models/blazeface'
 import * as tf from '@tensorflow/tfjs'
@@ -81,6 +81,22 @@ function App() {
     return val
   }, [form.expectedSalary])
 
+  useEffect(() => {
+    if (stage !== 'intro') {
+      return
+    }
+    const html = document.documentElement
+    const body = document.body
+    const prevHtmlOverflow = html.style.overflow
+    const prevBodyOverflow = body.style.overflow
+    html.style.overflow = 'hidden'
+    body.style.overflow = 'hidden'
+    return () => {
+      html.style.overflow = prevHtmlOverflow
+      body.style.overflow = prevBodyOverflow
+    }
+  }, [stage])
+
   const computedResult: ResultData | null = useMemo(() => {
     if (!form.gender) return null
     const normalizedExpected = clamp(parsedExpectedSalary, MIN_SALARY, MAX_SALARY)
@@ -139,7 +155,7 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${stage === 'intro' ? ' app-shell--intro' : ''}`}>
       <div className={`scene scene-intro ${stage === 'intro' ? 'is-active' : 'is-hidden'}`}>
         <IntroScene onStart={handleStart} />
       </div>
@@ -172,23 +188,40 @@ type IntroSceneProps = {
 }
 
 function IntroScene({ onStart }: IntroSceneProps) {
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      onStart()
+    }
+  }
+
   return (
     <section
       className="intro"
       onClick={onStart}
-      aria-label="Spin the Pay Gap intro"
+      onKeyDown={handleKeyDown}
+      tabIndex={0}
+      aria-label="The gender wage gap, click or press Enter to continue"
     >
+      <div className="intro-line" aria-hidden="true" />
+      <div className="intro-coins" aria-hidden="true">
+        {[1, 2, 3, 4, 5, 6, 7].map((n) => (
+          <span key={n} className={`intro-coin intro-coin--${n}`}>
+            <img
+              className="intro-coin__img"
+              src={`${import.meta.env.BASE_URL}Eurosign.png`}
+              alt=""
+              draggable={false}
+            />
+          </span>
+        ))}
+      </div>
       <div className="intro-content">
-        <h1 className="intro-title">Spin the Pay Gap</h1>
-        <button
-          className="primary-button"
-          onClick={(event) => {
-            event.stopPropagation()
-            onStart()
-          }}
-        >
-          Start the experience
-        </button>
+        <h1 className="intro-title">
+          <span className="intro-title__black">THE </span>
+          <span className="intro-title__pink">GENDER WAGE </span>
+          <span className="intro-title__black">GAP</span>
+        </h1>
       </div>
     </section>
   )
@@ -784,6 +817,8 @@ function ResultScene({ form, result, onRestart }: ResultSceneProps) {
   const [tilt, setTilt] = useState<{ x: number; y: number }>({ x: 12, y: -18 })
   const [activeStoryStep, setActiveStoryStep] = useState(0)
   const storyRefs = useRef<Array<HTMLElement | null>>([])
+  const [leavingStep, setLeavingStep] = useState<number | null>(null)
+  const [leavingKey, setLeavingKey] = useState(0)
 
   const handlePyramidMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -824,6 +859,71 @@ function ResultScene({ form, result, onRestart }: ResultSceneProps) {
     nodes.forEach((n) => observer.observe(n))
     return () => observer.disconnect()
   }, [suggestions.length])
+
+  // Card transition bookkeeping (to animate previous card out)
+  useEffect(() => {
+    setLeavingStep((prev) => {
+      if (prev === activeStoryStep) return prev
+      return prev
+    })
+  }, [activeStoryStep])
+
+  useEffect(() => {
+    setLeavingStep((prev) => {
+      if (prev === null) return null
+      return prev
+    })
+  }, [])
+
+  useEffect(() => {
+    setLeavingStep((prev) => {
+      if (prev === null) return activeStoryStep
+      if (prev === activeStoryStep) return prev
+      return prev
+    })
+  }, [activeStoryStep])
+
+  useEffect(() => {
+    // When step changes, mark previous as leaving for 320ms
+    setLeavingStep((prev) => {
+      if (prev === null) return null
+      return prev
+    })
+  }, [])
+
+  useEffect(() => {
+    // Track previous step for exit animation
+    setLeavingStep((prevLeaving) => {
+      // no-op; handled below
+      return prevLeaving
+    })
+  }, [])
+
+  useEffect(() => {
+    // Determine previous step (simple: last leavingStepKey holds it)
+    setLeavingKey((k) => k + 1)
+  }, [activeStoryStep])
+
+  useEffect(() => {
+    // Store previous step and clear after animation
+    setLeavingStep((prev) => {
+      // prev holds previous step at the moment before change, but we don't have it here.
+      // We'll compute it from leavingKey effect below using a ref.
+      return prev
+    })
+  }, [leavingKey])
+
+  const prevStepRef = useRef(activeStoryStep)
+  useEffect(() => {
+    const prev = prevStepRef.current
+    if (prev !== activeStoryStep) {
+      setLeavingStep(prev)
+      const t = window.setTimeout(() => setLeavingStep(null), 320)
+      prevStepRef.current = activeStoryStep
+      return () => window.clearTimeout(t)
+    }
+    prevStepRef.current = activeStoryStep
+  }, [activeStoryStep])
 
   const levelCount = 5
   const maxIndex = levelCount - 1
@@ -911,37 +1011,68 @@ function ResultScene({ form, result, onRestart }: ResultSceneProps) {
         </div>
 
         <div className="story-right">
-          <div className="story-suggestions">
-            {suggestions.slice(0, 4).map((item, idx) => (
-              <section
-                key={item.title}
-                className="story-section"
-                ref={(el) => {
-                  storyRefs.current[idx] = el
-                }}
-                data-step-index={idx}
-              >
-                <div className={`story-card ${idx === activeStoryStep ? 'is-active' : ''}`}>
-                  <div className="story-card-inner">
-                    <div className="suggestion-icon" aria-hidden="true">
-                      {item.icon}
-                    </div>
-                    <div>
-                      <h4 className="story-card-title">{item.title}</h4>
-                      <p className="story-card-body">{item.body}</p>
-                    </div>
-                  </div>
-                </div>
-              </section>
-            ))}
+          <div className="story-scroll">
+            <div className="story-pinned">
+              <div className="story-stage">
+                {leavingStep !== null && leavingStep !== activeStoryStep && (
+                  <StoryCard
+                    key={`leave-${leavingKey}-${leavingStep}`}
+                    item={suggestions[leavingStep]}
+                    state="leaving"
+                  />
+                )}
+                <StoryCard
+                  key={`active-${activeStoryStep}`}
+                  item={suggestions[activeStoryStep]}
+                  state="active"
+                />
+              </div>
 
-            <button className="secondary-button" onClick={onRestart}>
-              Spin again with a different profile
-            </button>
+              <div className="story-footer">
+                <button className="secondary-button" onClick={onRestart}>
+                  Spin again with a different profile
+                </button>
+              </div>
+            </div>
+
+            <div className="story-markers" aria-hidden="true">
+              {suggestions.slice(0, 4).map((_, idx) => (
+                <div
+                  key={idx}
+                  className="story-marker"
+                  ref={(el) => {
+                    storyRefs.current[idx] = el
+                  }}
+                  data-step-index={idx}
+                />
+              ))}
+            </div>
           </div>
         </div>
       </div>
     </section>
+  )
+}
+
+function StoryCard({
+  item,
+  state,
+}: {
+  item: Suggestion
+  state: 'active' | 'leaving'
+}) {
+  return (
+    <div className={`story-cardPinned ${state}`}>
+      <div className="story-card-inner">
+        <div className="suggestion-icon" aria-hidden="true">
+          {item.icon}
+        </div>
+        <div>
+          <h4 className="story-card-title">{item.title}</h4>
+          <p className="story-card-body">{item.body}</p>
+        </div>
+      </div>
+    </div>
   )
 }
 
