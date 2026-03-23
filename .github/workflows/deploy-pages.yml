@@ -37,7 +37,8 @@ jobs:
         run: cp dist/index.html dist/404.html
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@3
+        # Must be a real tag (e.g. v3.0.1), not bare "3" — GitHub cannot resolve @3
+        uses: actions/upload-pages-artifact@v3.0.1
         with:
           path: ./dist
 
@@ -50,4 +51,4 @@ jobs:
     steps:
       - name: Deploy
         id: deploy
-        uses: actions/deploy-pages@4
+        uses: actions/deploy-pages@v4.0.5
