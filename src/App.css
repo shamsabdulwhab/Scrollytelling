@@ -2162,10 +2162,6 @@
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 
-.form-page.result-page .pyramid-steps {
-  color: #666;
-}
-
 .form-page.result-page .pyramid-legend {
   color: #555;
 }
@@ -2575,15 +2571,6 @@
 
 .pyramid-marker-dot--expected::after {
   background: #818cf8;
-}
-
-.pyramid-steps {
-  display: flex;
-  justify-content: space-between;
-  width: 100%;
-  max-width: 280px;
-  font-size: 11px;
-  color: rgba(148, 163, 184, 0.96);
 }
 
 .pyramid-legend {
