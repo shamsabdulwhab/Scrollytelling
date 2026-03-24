@@ -5,7 +5,9 @@ import * as tf from '@tensorflow/tfjs'
 import { BackArrowButton } from '../components/BackArrowButton'
 import { CameraCapture } from '../components/CameraCapture'
 import type { FaceDetectorConstructor, FormState, GenderOption } from '../types'
+import { predictAgeGenderFromCanvas, type FaceApiAgeGender } from '../utils/faceApiAgeGender'
 import { hashPixels, inferCameraProfile } from '../utils/cameraInference'
+import { isGenderSelected } from '../utils/genderStatus'
 
 const STUDY_OPTIONS = [
   'Front-End Dev',
@@ -19,14 +21,16 @@ const DEFAULT_AVATAR_PLACEHOLDER = `${import.meta.env.BASE_URL}Ellipse%201.png`
 export type FormSceneProps = {
   form: FormState
   hasGenderError: boolean
+  hasFieldOfStudyError: boolean
   onChange: (field: keyof FormState, value: string) => void
   onPhotoChange: (photoUrl: string | null) => void
-  /** Applies inferred gender to the form and saves ethnicity / age / confidence for the bottom summary. */
+  /** Saves demo ethnicity / age / confidence for the bottom summary (gender comes from the Gender field above). */
   onApplyCameraSave: (payload: {
-    gender: Exclude<GenderOption, ''>
     ethnicity: string
     ageRange: string
     confidence: number
+    modelGenderLabel?: string
+    suggestedGender?: 'woman' | 'man'
   }) => void
   /** Clears the bottom “Saved from camera” panel (photo and gender stay; user can save again). */
   onClearCameraSaved: () => void
@@ -44,8 +48,10 @@ type PhotoAnalysis = {
   framing: 'close' | 'ok' | 'far' | 'unknown'
   note: string
   canProceed: boolean
-  /** Hash seed for deterministic demo ethnicity / gender / age labels. */
+  /** Hash seed for deterministic demo ethnicity / age labels. */
   seed: number
+  /** Neural age + binary gender when exactly one face; null if model could not classify. */
+  faceApiAgeGender: FaceApiAgeGender | null
 }
 
 function genderOptionLabel(g: GenderOption): string {
@@ -55,9 +61,15 @@ function genderOptionLabel(g: GenderOption): string {
   return '—'
 }
 
+function modelGenderLabelFromEstimate(f: FaceApiAgeGender): string {
+  const label = f.gender === 'female' ? 'Female' : 'Male'
+  return `${label} (${Math.round(f.genderProbability * 100)}%)`
+}
+
 export function FormScene({
   form,
   hasGenderError,
+  hasFieldOfStudyError,
   onChange,
   onPhotoChange,
   onApplyCameraSave,
@@ -232,6 +244,15 @@ export function FormScene({
         if (tooBright) noteParts.push('Image looks overexposed.')
         if (framing !== 'unknown') noteParts.push(`Framing: ${framing}.`)
 
+        let faceApiAgeGender: FaceApiAgeGender | null = null
+        if (faceCount === 1) {
+          try {
+            faceApiAgeGender = await predictAgeGenderFromCanvas(canvas)
+          } catch {
+            faceApiAgeGender = null
+          }
+        }
+
         if (!cancelled) {
           setAnalysis({
             faceCount,
@@ -244,6 +265,7 @@ export function FormScene({
             note: noteParts.join(' '),
             canProceed,
             seed: hashPixels(imgData.data),
+            faceApiAgeGender,
           })
         }
       } catch {
@@ -263,6 +285,7 @@ export function FormScene({
             note: 'Could not analyze this photo. You can retake it.',
             canProceed: true,
             seed: fallbackSeed,
+            faceApiAgeGender: null,
           })
         }
       }
@@ -298,25 +321,57 @@ export function FormScene({
     return Math.round(Math.max(0, Math.min(100, overall)))
   }, [analysis])
 
+  const showDemoInsights = analysis?.faceCount === 1
+
   const inferredProfile = useMemo(() => {
-    if (!analysis) return null
+    if (!analysis || analysis.faceCount !== 1) return null
     return inferCameraProfile(analysis.seed)
   }, [analysis])
 
+  const noFaceInsightMessage = useMemo(() => {
+    if (!analysis) return ''
+    if (analysis.faceCount === 0) {
+      return 'No face detected. Use one clear face in the frame.'
+    }
+    if (analysis.faceCount !== null && analysis.faceCount > 1) {
+      return 'More than one face detected. Use a photo with one person.'
+    }
+    return (
+      analysis.note.trim() || "Face detection isn't available in this browser."
+    )
+  }, [analysis])
+
   function handleCameraSave() {
-    if (!inferredProfile || confidence === null) return
+    if (analysis?.faceCount !== 1 || !inferredProfile || confidence === null) return
+    const ageRange =
+      analysis.faceApiAgeGender != null
+        ? `~${Math.round(analysis.faceApiAgeGender.age)} years`
+        : inferredProfile.ageRange
+    const modelGenderLabel =
+      analysis.faceApiAgeGender != null
+        ? modelGenderLabelFromEstimate(analysis.faceApiAgeGender)
+        : undefined
+    const suggestedGender =
+      analysis.faceApiAgeGender != null
+        ? analysis.faceApiAgeGender.gender === 'female'
+          ? 'woman'
+          : 'man'
+        : undefined
     onApplyCameraSave({
-      gender: inferredProfile.gender,
       ethnicity: inferredProfile.ethnicityLabel,
-      ageRange: inferredProfile.ageRange,
+      ageRange,
       confidence,
+      modelGenderLabel,
+      suggestedGender,
     })
   }
 
   const cameraInsightsSaved =
     form.cameraSavedEthnicity != null ||
     form.cameraSavedAgeRange != null ||
-    form.cameraSavedConfidence != null
+    form.cameraSavedConfidence != null ||
+    form.cameraSavedModelGender != null ||
+    form.cameraSavedSuggestedGender != null
 
   return (
     <section className="form-page">
@@ -356,15 +411,15 @@ export function FormScene({
         <div className="form-page__row">
           <div className="form-page__field">
             <div className="form-page__label-row">
-              <label htmlFor="displayName">Name</label>
+              <label htmlFor="companyName">Company name</label>
             </div>
             <input
-              id="displayName"
+              id="companyName"
               type="text"
-              autoComplete="name"
-              placeholder="Enter your name"
-              value={form.displayName}
-              onChange={(e) => onChange('displayName', e.target.value)}
+              autoComplete="organization"
+              placeholder="Enter your company name"
+              value={form.companyName}
+              onChange={(e) => onChange('companyName', e.target.value)}
             />
           </div>
 
@@ -377,6 +432,10 @@ export function FormScene({
                 id="gender"
                 className="form-page__select"
                 value={form.gender}
+                aria-invalid={hasGenderError}
+                aria-describedby={
+                  hasGenderError ? 'gender-error' : isGenderSelected(form) ? 'gender-hint' : undefined
+                }
                 onChange={(e) => onChange('gender', e.target.value as GenderOption)}
               >
                 <option value="">Select gender</option>
@@ -388,7 +447,17 @@ export function FormScene({
                 ▼
               </span>
             </div>
-            {hasGenderError && <p className="form-page__error">Please choose a gender to continue.</p>}
+            {hasGenderError && (
+              <p className="form-page__error" id="gender-error" role="alert">
+                Please choose a gender to continue.
+              </p>
+            )}
+            {isGenderSelected(form) && !hasGenderError && (
+              <p className="form-page__field-hint" id="gender-hint">
+                Using “{genderOptionLabel(form.gender)}” for the salary comparison — you can change it
+                before submitting.
+              </p>
+            )}
           </div>
 
           <div className="form-page__field">
@@ -405,7 +474,9 @@ export function FormScene({
             />
           </div>
 
-          <div className="form-page__field">
+          <div
+            className={`form-page__field ${hasFieldOfStudyError ? 'form-page__field--error' : ''}`}
+          >
             <div className="form-page__label-row">
               <label htmlFor="field">Field of study</label>
             </div>
@@ -427,13 +498,17 @@ export function FormScene({
                 ▼
               </span>
             </div>
+            {hasFieldOfStudyError && (
+              <p className="form-page__error">Please select a field of study to continue.</p>
+            )}
           </div>
         </div>
 
-        {form.photoUrl && analysis && inferredProfile && confidence !== null && (
+        {form.photoUrl && analysis && showDemoInsights && inferredProfile && confidence !== null && (
           <div className="form-page__insights">
             <p className="form-page__insights-disclaimer">
-              Demo estimates from your photo — not identity verification.
+              Ethnicity below is a demo label. Age and gender (female/male) use a neural model on your
+              photo — they can be wrong and do not set the salary Gender field above.
             </p>
             <dl className="form-page__insights-grid">
               <div className="form-page__insights-row">
@@ -441,12 +516,20 @@ export function FormScene({
                 <dd>{inferredProfile.ethnicityLabel}</dd>
               </div>
               <div className="form-page__insights-row">
-                <dt>Gender</dt>
-                <dd>{genderOptionLabel(inferredProfile.gender)}</dd>
+                <dt>Gender (model)</dt>
+                <dd>
+                  {analysis.faceApiAgeGender != null
+                    ? modelGenderLabelFromEstimate(analysis.faceApiAgeGender)
+                    : 'Unavailable — try clearer lighting or a more face-forward photo.'}
+                </dd>
               </div>
               <div className="form-page__insights-row">
                 <dt>Expected age</dt>
-                <dd>{inferredProfile.ageRange}</dd>
+                <dd>
+                  {analysis.faceApiAgeGender != null
+                    ? `~${Math.round(analysis.faceApiAgeGender.age)} years`
+                    : inferredProfile.ageRange}
+                </dd>
               </div>
               <div className="form-page__insights-row form-page__insights-row--confidence">
                 <dt>Confidence</dt>
@@ -476,13 +559,40 @@ export function FormScene({
                   Save
                 </button>
               )}
+              <button
+                type="button"
+                className="form-page__insights-reshot"
+                onClick={() => onPhotoChange(null)}
+              >
+                Reshot
+              </button>
+            </div>
+          </div>
+        )}
+
+        {form.photoUrl && analysis && !showDemoInsights && (
+          <div
+            className="form-page__insights form-page__insights--blocked"
+            role="alert"
+          >
+            <p className="form-page__insights-message">{noFaceInsightMessage}</p>
+            <div className="form-page__insights-actions">
+              <button
+                type="button"
+                className="form-page__insights-reshot"
+                onClick={() => onPhotoChange(null)}
+              >
+                Reshot
+              </button>
             </div>
           </div>
         )}
 
         {(form.cameraSavedEthnicity != null ||
           form.cameraSavedAgeRange != null ||
-          form.cameraSavedConfidence != null) && (
+          form.cameraSavedConfidence != null ||
+          form.cameraSavedModelGender != null ||
+          form.cameraSavedSuggestedGender != null) && (
           <div className="form-page__saved-summary" aria-live="polite">
             <div className="form-page__saved-header">
               <h3 className="form-page__saved-title">Saved from camera</h3>
@@ -508,6 +618,12 @@ export function FormScene({
                   <span className="form-page__saved-val">{form.cameraSavedAgeRange}</span>
                 </li>
               )}
+              {form.cameraSavedModelGender != null && (
+                <li>
+                  <span className="form-page__saved-key">Gender (model)</span>
+                  <span className="form-page__saved-val">{form.cameraSavedModelGender}</span>
+                </li>
+              )}
               {form.cameraSavedConfidence != null && (
                 <li>
                   <span className="form-page__saved-key">Confidence</span>
@@ -517,8 +633,27 @@ export function FormScene({
                 </li>
               )}
             </ul>
+            {form.cameraSavedSuggestedGender != null && (
+              <div className="form-page__saved-actions">
+                {form.gender === form.cameraSavedSuggestedGender ? (
+                  <p className="form-page__saved-applied">
+                    Gender field matches the saved model ({genderOptionLabel(form.cameraSavedSuggestedGender)}
+                    ).
+                  </p>
+                ) : (
+                  <button
+                    type="button"
+                    className="form-page__saved-apply"
+                    onClick={() => onChange('gender', form.cameraSavedSuggestedGender!)}
+                  >
+                    Apply {genderOptionLabel(form.cameraSavedSuggestedGender)} to Gender (for salary)
+                  </button>
+                )}
+              </div>
+            )}
             <p className="form-page__saved-hint">
-              Gender is filled in the field above. Use &quot;Discover your worth&quot; to continue.
+              Save also sets Gender to the model guess when available. Change the dropdown anytime, or use
+              the button to match the saved model again. Then use &quot;Discover your worth&quot; to continue.
             </p>
           </div>
         )}

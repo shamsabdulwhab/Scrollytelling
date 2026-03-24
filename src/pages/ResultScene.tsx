@@ -157,10 +157,7 @@ export function ResultScene({ form, result, onBack, onRestart }: ResultSceneProp
 
   const suggestions = buildSuggestions(gender, form.fieldOfStudy)
   const lastStoryIndex = Math.max(0, suggestions.length - 1)
-
-  useEffect(() => {
-    setActiveStoryStep((s) => Math.min(Math.max(0, s), lastStoryIndex))
-  }, [lastStoryIndex, suggestions.length])
+  const displayStoryStep = Math.min(Math.max(0, activeStoryStep), lastStoryIndex)
 
   useLayoutEffect(() => {
     const el = cardsViewportRef.current
@@ -173,7 +170,9 @@ export function ResultScene({ form, result, onBack, onRestart }: ResultSceneProp
     return () => ro.disconnect()
   }, [])
 
-  lastStoryIndexRef.current = lastStoryIndex
+  useLayoutEffect(() => {
+    lastStoryIndexRef.current = lastStoryIndex
+  }, [lastStoryIndex])
 
   useEffect(() => {
     const el = cardsViewportRef.current
@@ -192,10 +191,11 @@ export function ResultScene({ form, result, onBack, onRestart }: ResultSceneProp
 
       setActiveStoryStep((s) => {
         const max = lastStoryIndexRef.current
-        let next = s
-        if (down) next = Math.min(max, s + 1)
-        else if (up) next = Math.max(0, s - 1)
-        if (next !== s) {
+        const sClamped = Math.min(Math.max(0, s), max)
+        let next = sClamped
+        if (down) next = Math.min(max, sClamped + 1)
+        else if (up) next = Math.max(0, sClamped - 1)
+        if (next !== sClamped) {
           wheelCooldownRef.current = true
           window.setTimeout(() => {
             wheelCooldownRef.current = false
@@ -224,11 +224,12 @@ export function ResultScene({ form, result, onBack, onRestart }: ResultSceneProp
         wheelCooldownRef.current = false
       }, WHEEL_COOLDOWN_MS)
 
-      if (dy > 0) {
-        setActiveStoryStep((s) => Math.min(lastStoryIndexRef.current, s + 1))
-      } else {
-        setActiveStoryStep((s) => Math.max(0, s - 1))
-      }
+      setActiveStoryStep((s) => {
+        const max = lastStoryIndexRef.current
+        const sClamped = Math.min(Math.max(0, s), max)
+        if (dy > 0) return Math.min(max, sClamped + 1)
+        return Math.max(0, sClamped - 1)
+      })
     },
     [suggestions.length],
   )
@@ -242,11 +243,10 @@ export function ResultScene({ form, result, onBack, onRestart }: ResultSceneProp
 
   const storyStepPercent = useMemo(() => {
     const maxIdx = Math.max(1, suggestions.length - 1)
-    const clamped = Math.max(0, Math.min(maxIdx, activeStoryStep))
-    return 8 + (clamped / maxIdx) * 72
-  }, [activeStoryStep, suggestions.length])
+    return 8 + (displayStoryStep / maxIdx) * 72
+  }, [displayStoryStep, suggestions.length])
 
-  const trackOffset = slidePx > 0 ? activeStoryStep * slidePx : 0
+  const trackOffset = slidePx > 0 ? displayStoryStep * slidePx : 0
 
   return (
     <section className="form-page result-page">
@@ -377,7 +377,7 @@ export function ResultScene({ form, result, onBack, onRestart }: ResultSceneProp
                   <span
                     key={idx}
                     role="presentation"
-                    className={`result-page__dot ${idx === activeStoryStep ? 'is-active' : ''}`}
+                    className={`result-page__dot ${idx === displayStoryStep ? 'is-active' : ''}`}
                   />
                 ))}
               </div>

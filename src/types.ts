@@ -12,6 +12,8 @@ export type FormState = {
   cameraSavedConfidence?: number
   /** Neural model female/male label + confidence — not used for salary (see Gender field). */
   cameraSavedModelGender?: string
+  /** When the model guessed female/male; use “Apply to Gender field” to copy into the dropdown. */
+  cameraSavedSuggestedGender?: 'woman' | 'man'
 }
 
 export type ResultData = {
