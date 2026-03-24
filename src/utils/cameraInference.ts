@@ -1,7 +1,5 @@
-import type { GenderOption } from '../types'
-
+/** Demo ethnicity + age only — gender is not inferred from the image (use the form). */
 export type CameraInferredProfile = {
-  gender: Exclude<GenderOption, ''>
   ethnicityLabel: string
   ageRange: string
 }
@@ -35,10 +33,6 @@ export function hashPixels(data: Uint8ClampedArray, sampleLen = 768): number {
 }
 
 export function inferCameraProfile(seed: number): CameraInferredProfile {
-  const g = mix32(seed) % 3
-  const gender: Exclude<GenderOption, ''> =
-    g === 0 ? 'woman' : g === 1 ? 'man' : 'non-binary'
-
   const eIdx = mix32(seed + 1) % ETHNICITY_POOL.length
   const ethnicityLabel = ETHNICITY_POOL[eIdx]
 
@@ -46,5 +40,5 @@ export function inferCameraProfile(seed: number): CameraInferredProfile {
   const span = 3 + (mix32(seed + 3) % 5)
   const ageRange = `${mid - span}–${mid + span} years`
 
-  return { gender, ethnicityLabel, ageRange }
+  return { ethnicityLabel, ageRange }
 }

@@ -1,7 +1,7 @@
 export type GenderOption = 'woman' | 'man' | 'non-binary' | ''
 
 export type FormState = {
-  displayName: string
+  companyName: string
   gender: GenderOption
   expectedSalary: string
   fieldOfStudy: string
@@ -10,6 +10,8 @@ export type FormState = {
   cameraSavedEthnicity?: string
   cameraSavedAgeRange?: string
   cameraSavedConfidence?: number
+  /** Neural model female/male label + confidence — not used for salary (see Gender field). */
+  cameraSavedModelGender?: string
 }
 
 export type ResultData = {
