@@ -72,7 +72,8 @@ export function AppShellLayout() {
 
   const resultForScene = result ?? computedResult
 
-  if (pathname === '/result' && !computedResult) {
+  // Allow /result when we have either committed result (after submit) or a computable preview from form data.
+  if (pathname === '/result' && !resultForScene) {
     return <Navigate to="/form" replace />
   }
 
