@@ -1,0 +1,13 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  # App is served at https://genderiquality.netlify.app/ (root), not /Scrollytelling/
+  VITE_BASE = "/"
+
+# React Router client routes (/form, /result) — serve index.html for unknown paths
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
